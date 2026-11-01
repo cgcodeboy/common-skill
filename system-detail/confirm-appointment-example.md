@@ -1,6 +1,6 @@
 # 例子
 
-这里的类、表和错误名只用来校准密度。写入 `docs/详细设计说明书.md` 时，按 [sdd-chapters.md](sdd-chapters.md) 放进对应程序的算法、流程逻辑、输入项、输出项、存储分配和测试计划，不要保留下面的私有标题。另一个单元要重算不变量和事务，不能把预约版本行抄过去。
+这里的类、表和错误名只用来校准密度。程序写入 `docs/详细设计说明书.md`，按 [sdd-chapters.md](sdd-chapters.md) 放进算法、流程逻辑、输入项、输出项和测试计划。版本行、预约表和发件箱表写入 `docs/数据库设计说明书.md`：实体和关系在概念结构，列、主键和索引在逻辑结构与物理结构。不要把表结构只留在存储分配。目录和代码上限写入说明书的「源程序组织」，依据见 [source-layout.md](source-layout.md)。不要保留下面的私有标题。另一个单元要重算不变量和事务，不能把预约版本行抄过去。
 
 下面假定架构已经接受：预约模块与卸货模块在同一个发布单元里；预约库是日历真相；确认写入和「预约已确认」发件箱同一事务；冲突用乐观方式处理并最多重试一次；95% 的确认在 1 秒内返回；已确认预约不丢，卸货侧 5 秒内可见。这些不在详细设计里重选。界面上的时间格和撤销条属于 `/system-interaction`，这里只保证拒绝和冲突在契约里可区分。
 
@@ -157,6 +157,37 @@ sequenceDiagram
 理解成希望少一张表。唯一索引守得住的是完全相同的键，S1 的不变量是时间相交。8:00–9:30 和 9:00–10:00 可以同时通过唯一索引。所以不能用它替换月台日版本。
 
 可以附加的、不替换版本的做法：没有。相等约束不加强重叠判断。若用户改为「预约只能整点且长度固定，重叠等价于开始时间相等」，唯一索引才够，版本行可以删，事务改成插入预约时捕获唯一冲突。在用户明确改不变量之前，版本行保留。故意不改发件箱与预约的同一事务。
+
+## 源程序组织的密度
+
+下面假定框架设计写的语言是 Go。换一种语言就换 `source-layout.md` 里那一行依据，不要把 `internal` 和 `gofmt` 抄到别的语言上。
+
+依据是 Go 官方的 Organizing a Go module（`https://go.dev/doc/modules/layout`）和 Go Code Review Comments。格式化命令是 `gofmt`。不采用 `github.com/golang-standards/project-layout`。
+
+```text
+go.mod
+cmd/dockd/main.go
+internal/appointment/confirm.go
+internal/appointment/confirm_test.go
+internal/appointment/overlap.go
+internal/appointment/dockday.go
+internal/appointment/pg/store.go
+```
+
+`cmd/dockd/main.go` 只组装。`overlap.go` 放重叠判断，`dockday.go` 放月台日版本，`confirm.go` 放确认程序的事务。只有 `pg/store.go` 引用数据库驱动。没有 `pkg/`、`utils/`、`service/`。
+
+`confirm.go` 只在确认或拒绝的规则变化时修改。`dockday.go` 只在月台日版本的不变量变化时修改。`pg/store.go` 只在查询和条件更新的写法变化时修改。`main.go` 只在依赖怎么组装时修改。重叠判断不放进 `store.go`，驱动调用不放进 `confirm.go`。
+
+| 函数 | 类型 | 命令或查询 | 改什么 | 不许做什么 |
+| --- | --- | --- | --- | --- |
+| `Confirm` | 入口 | 命令 | 不直接改字段 | 不写重叠公式，不写 SQL，函数体只有步骤调用和失败返回 |
+| `Overlap` | 预约规则 | 查询 | 不改状态 | 不访问数据库 |
+| `Advance` | 月台日 | 命令 | 版本 | 不插入预约，不写发件箱 |
+| `SaveConfirmed` | `pg.Store` | 命令 | 预约行和发件箱行 | 不判断时间窗是否相交 |
+
+`Confirm` 按流程逻辑调用这三步。`Overlap` 不被公开给包外。不设 `AppointmentService` 接口。不写一个把参数原样交给 `SaveConfirmed` 的 `persist`。文件不超过 400 行，函数不超过 80 行，参数不超过 4 个。重试一次是具名常量。`WindowConflict` 是输出项里的错误，不是临时字符串。
+
+不合格的写法是一个 `Confirm` 里从重叠公式写到 SQL，或拆出十几个只转发一次的函数，或 `internal/service/appointment_service.go` 加 `internal/utils/time.go`。
 
 ## 例子三
 
